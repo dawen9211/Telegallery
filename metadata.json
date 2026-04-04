@@ -1,0 +1,5 @@
+{
+  "name": "TeleGallery",
+  "description": "Galería avanzada para Telegram con álbumes, ordenación, vista a pantalla completa y sincronización de carpetas locales.",
+  "requestFramePermissions": []
+}
