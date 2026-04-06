@@ -45,6 +45,11 @@ self.addEventListener('fetch', (event) => {
       
       let streamController;
       let headersSent = false;
+      let bufferedChunks = [];
+      let bufferedSize = 0;
+      let isBuffering = true;
+      const BUFFER_THRESHOLD = 10 * 1024 * 1024; // 10MB buffer
+
       const stream = new ReadableStream({
         start(controller) {
           streamController = controller;
@@ -56,7 +61,7 @@ self.addEventListener('fetch', (event) => {
           messageChannel.port1.postMessage({ type: 'CANCEL' });
         }
       }, {
-        highWaterMark: 5 * 1024 * 1024, // 5MB buffer
+        highWaterMark: 15 * 1024 * 1024, // Increased highWaterMark
         size(chunk) {
           return chunk.byteLength || 1;
         }
@@ -84,8 +89,27 @@ self.addEventListener('fetch', (event) => {
             headers
           }));
         } else if (e.data.type === 'CHUNK') {
-          streamController.enqueue(new Uint8Array(e.data.chunk));
+          if (isBuffering) {
+            bufferedChunks.push(new Uint8Array(e.data.chunk));
+            bufferedSize += e.data.chunk.byteLength;
+            if (bufferedSize >= BUFFER_THRESHOLD) {
+              isBuffering = false;
+              for (const chunk of bufferedChunks) {
+                streamController.enqueue(chunk);
+              }
+              bufferedChunks = [];
+            }
+          } else {
+            streamController.enqueue(new Uint8Array(e.data.chunk));
+          }
         } else if (e.data.type === 'DONE') {
+          if (isBuffering) {
+            // Flush remaining buffer if stream ends before threshold
+            for (const chunk of bufferedChunks) {
+              streamController.enqueue(chunk);
+            }
+            bufferedChunks = [];
+          }
           streamController.close();
         } else if (e.data.type === 'ERROR') {
           streamController.error(new Error('Stream error'));

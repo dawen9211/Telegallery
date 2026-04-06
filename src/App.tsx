@@ -77,7 +77,7 @@ import { Buffer } from 'buffer';
 import { get, set } from 'idb-keyval';
 
 // Utility for tailwind classes
-import { getTelegramClient, disconnectTelegramClient, uploadLargeFile } from './lib/telegramClient';
+import { getTelegramClient, disconnectTelegramClient, uploadLargeFile, downloadFile } from './lib/telegramClient';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -875,7 +875,8 @@ export default function App() {
         const media = messages[0].media;
         const totalSize = (media as any).document?.size || (media as any).photo?.sizes?.slice(-1)[0]?.size || 0;
 
-        const buffer = await client.downloadMedia(media, {
+        const buffer = await downloadFile(client, media, {
+          workers: 8,
           progressCallback: (progress: any) => {
             // GramJS progressCallback returns a fraction (0 to 1)
             const percent = Math.round(Number(progress) * 100);
@@ -978,7 +979,8 @@ export default function App() {
               const media = messages[0].media;
               const totalSize = (media as any).document?.size || (media as any).photo?.sizes?.slice(-1)[0]?.size || 0;
               
-              const buffer = await client.downloadMedia(media, {
+              const buffer = await downloadFile(client, media, {
+                workers: 8,
                 progressCallback: (progress: any) => {
                   // GramJS progressCallback returns a fraction (0 to 1)
                   const percent = Math.round(Number(progress) * 100);

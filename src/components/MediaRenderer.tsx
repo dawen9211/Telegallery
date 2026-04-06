@@ -195,12 +195,10 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const fileLocation = info.location;
                     const dcId = info.dcId;
                     
-                    const chunkSize = 1024 * 1024; // 1MB chunks for faster streaming
+                    const chunkSize = 512 * 1024; // 512KB chunks for better granularity
                     
-                    // Pre-buffering logic: 15% of total size or 50MB (whichever is smaller)
-                    const threshold = Math.min(totalSize * 0.15, 50 * 1024 * 1024);
-                    const minThreshold = Math.min(5 * 1024 * 1024, totalSize);
-                    const actualThreshold = Math.max(threshold, minThreshold);
+                    // Pre-buffering logic: Fixed 10MB buffer as requested
+                    const actualThreshold = Math.min(10 * 1024 * 1024, totalSize);
                     
                     const isInitialRequest = start === 0;
                     let isPreBufferingActive = isInitialRequest;
@@ -210,7 +208,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                       setBufferingProgress(0);
                     }
 
-                    const concurrentRequests = isPreBufferingActive ? 5 : 3; // Use more workers during pre-buffering
+                    const concurrentRequests = 8; // Use 8 workers for better bandwidth saturation
                     
                     let currentOffset = alignedStart;
                     let downloaded = 0;
@@ -243,7 +241,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     };
                     
                     const fillQueue = () => {
-                      const currentConcurrency = isPreBufferingActive ? 5 : 3;
+                      const currentConcurrency = 8;
                       while (prefetchQueue.length < currentConcurrency && !cancelled && currentOffset < start + contentLength) {
                         prefetchQueue.push(fetchChunk(currentOffset));
                         currentOffset += chunkSize;

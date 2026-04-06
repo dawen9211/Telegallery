@@ -56,7 +56,7 @@ export const uploadLargeFile = async (
   const partSize = 512 * 1024; // 512KB chunks
   const partCount = Math.floor((size + partSize - 1) / partSize);
 
-  const workers = 3; // Reduce to 3 concurrent requests to avoid overwhelming
+  const workers = 8; // Increased to 8 concurrent requests for better bandwidth saturation
   let uploadedParts = 0;
 
   if (onProgress) onProgress(0);
@@ -130,4 +130,21 @@ export const uploadLargeFile = async (
         name,
         md5Checksum: '',
       });
+};
+
+/**
+ * Downloads a file from Telegram using multiple workers
+ */
+export const downloadFile = async (
+  client: TelegramClient,
+  media: any,
+  options: {
+    progressCallback?: any;
+    workers?: number;
+  } = {}
+) => {
+  return client.downloadFile(media, {
+    progressCallback: options.progressCallback,
+    workers: options.workers || 8, // Default to 8 workers for faster downloads
+  });
 };
