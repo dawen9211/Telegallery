@@ -55,6 +55,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   const [streaming, setStreaming] = useState(false);
   const [bufferingProgress, setBufferingProgress] = useState(0);
   const [isReadyToPlay, setIsReadyToPlay] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState('Conectando con Telegram...');
   const [retryCount, setRetryCount] = useState(0);
   const [forceStandard, setForceStandard] = useState(false);
@@ -96,26 +97,36 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   }, [bufferingProgress]);
 
   useEffect(() => {
-    if (isReadyToPlay && videoRef.current && !isThumbnail) {
+    if (!isBuffering && videoRef.current && !isThumbnail) {
       videoRef.current.play().catch(e => console.warn('Autoplay prevented:', e));
     }
-  }, [isReadyToPlay, isThumbnail]);
+  }, [isBuffering, isThumbnail]);
 
-  // Listen for progress messages from SW via BroadcastChannel
+  // Listen for progress messages from SW via BroadcastChannel 'tele_buffer'
   useEffect(() => {
-    const channel = new BroadcastChannel('download-progress');
+    const channel = new BroadcastChannel('tele_buffer');
     channel.onmessage = (event) => {
       if (event.data.type === 'PROGRESS' && event.data.fileId === fileId) {
         setBufferingProgress(event.data.progress);
+        
+        // SW starts responding at 10%
         if (event.data.progress >= 10) {
           setIsReadyToPlay(true);
+        }
+        
+        // UI unblocks and starts playing at 40%
+        if (event.data.progress >= 40 && isBuffering) {
+          setIsBuffering(false);
+          if (videoRef.current && !isThumbnail) {
+            videoRef.current.play().catch(e => console.warn('Autoplay prevented:', e));
+          }
         }
       }
     };
     return () => {
       channel.close();
     };
-  }, [fileId]);
+  }, [fileId, isBuffering, isThumbnail]);
 
   const mediaSourceRef = useRef<MediaSource | null>(null);
 
@@ -126,6 +137,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
     let currentBlobUrl: string | null = null;
 
     const fetchUrl = async () => {
+      setIsBuffering(true);
+      setBufferingProgress(0);
       if (!forceStandard && isLarge && sessionString && chatId && messageId && apiId && apiHash) {
         setLoading(true);
         try {
@@ -313,7 +326,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     };
                     
                     const fillQueue = () => {
-                      const currentConcurrency = 3;
+                      const currentConcurrency = 4;
                       while (prefetchQueue.length < currentConcurrency && !cancelled && currentOffset < start + contentLength) {
                         prefetchQueue.push(fetchChunk(currentOffset));
                         currentOffset += chunkSize;
@@ -528,14 +541,14 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
           </div>
         </div>
       )}
-      {streaming && !isReadyToPlay && (
+      {streaming && isBuffering && (
         <div 
-          className="absolute inset-0 z-30 flex flex-col items-center justify-center"
+          className="absolute inset-0 z-30 flex flex-col items-center justify-center backdrop-blur-[15px]"
           onPointerDown={(e) => e.stopPropagation()}
         >
           {/* Blur background with thumbnail */}
           <div 
-            className="absolute inset-0 bg-cover bg-center blur-xl"
+            className="absolute inset-0 bg-cover bg-center"
             style={{ backgroundImage: `url(${url})` }}
           />
           <div className="absolute inset-0 bg-black/60" />
@@ -562,17 +575,19 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
             </div>
           </div>
           
-          <p className="text-white font-medium text-lg animate-pulse">{loadingMessage}</p>
+          <p className="text-white font-medium text-lg animate-pulse text-center px-4">
+            {Math.round(bufferingProgress)}% cargado. Preparando reproducción fluida....
+          </p>
         </div>
       )}
       <video
         ref={videoRef}
         src={url}
-        className={cn("w-full h-full object-cover transition-opacity duration-500", (!isReadyToPlay && !isThumbnail) ? "opacity-0" : "opacity-100")}
+        className={cn("w-full h-full object-cover transition-opacity duration-500", (isBuffering && !isThumbnail) ? "opacity-0" : "opacity-100")}
         muted
         playsInline
         preload="auto"
-        autoPlay={isReadyToPlay && !isThumbnail}
+        autoPlay={!isBuffering && !isThumbnail}
         loop={!isThumbnail}
         controls={!isThumbnail}
         onLoadedData={(e) => {

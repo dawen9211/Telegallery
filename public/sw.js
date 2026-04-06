@@ -76,16 +76,35 @@ self.addEventListener('fetch', (event) => {
         if (e.data.type === 'HEADERS') {
           stream.headers = e.data;
           stream.headersSent = true;
-          resolve(createResponse(streamReadable, stream.headers, e.data.isRange));
+          // We don't resolve yet, we wait for 10% buffer if totalSize is known
+          if (!totalSize || totalSize <= 0) {
+            resolve(createResponse(streamReadable, stream.headers, e.data.isRange));
+          }
         } else if (e.data.type === 'CHUNK') {
           stream.downloadedBytes += e.data.chunk.byteLength;
           streamController.enqueue(new Uint8Array(e.data.chunk));
           
-          // Send progress via BroadcastChannel
-          const channel = new BroadcastChannel('download-progress');
-          channel.postMessage({ type: 'PROGRESS', fileId: stream.fileId, progress: (stream.downloadedBytes / totalSize) * 100 });
-          channel.close();
+          const progress = (stream.downloadedBytes / totalSize) * 100;
+          
+          // Send progress via BroadcastChannel 'tele_buffer'
+          // Only send every ~512KB to avoid flooding
+          if (!stream.lastProgressUpdate || stream.downloadedBytes - stream.lastProgressUpdate >= 512 * 1024 || progress >= 100) {
+            const channel = new BroadcastChannel('tele_buffer');
+            channel.postMessage({ type: 'PROGRESS', fileId: stream.fileId, progress });
+            channel.close();
+            stream.lastProgressUpdate = stream.downloadedBytes;
+          }
+
+          // Resolve the response only after 10% buffer is reached
+          if (stream.headersSent && !stream.resolved && progress >= 10) {
+            stream.resolved = true;
+            resolve(createResponse(streamReadable, stream.headers, stream.headers.isRange));
+          }
         } else if (e.data.type === 'DONE') {
+          if (!stream.resolved && stream.headersSent) {
+             stream.resolved = true;
+             resolve(createResponse(streamReadable, stream.headers, stream.headers.isRange));
+          }
           streamController.close();
         } else if (e.data.type === 'ERROR') {
           streamController.error(new Error('Stream error'));
