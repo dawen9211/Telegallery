@@ -1195,8 +1195,7 @@ export default function App() {
             attributes: attributes,
           });
           
-          // Ensure messageId is a number and fileId is a string
-          messageId = Number(result.id);
+          messageId = result.id;
           fileId = result.id.toString(); 
         } else {
           // Use Bot API for small files

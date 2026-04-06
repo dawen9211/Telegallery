@@ -54,32 +54,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   const [error, setError] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [bufferingProgress, setBufferingProgress] = useState(0);
-  const [isReadyToPlay, setIsReadyToPlay] = useState(false);
-  const [loadingMessage, setLoadingMessage] = useState('Conectando con Telegram...');
+  const [isPreBuffering, setIsPreBuffering] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    if (streaming && !isReadyToPlay) {
-      // Timeout for 0% progress
-      connectionTimeoutRef.current = setTimeout(() => {
-        if (bufferingProgress === 0) {
-          console.warn('Connection stalled at 0%, re-initializing...');
-          setLoadingMessage('Reintentando conexión...');
-          // Trigger a re-fetch or re-init here if needed
-        }
-      }, 7000);
-    }
-    return () => {
-      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
-    };
-  }, [streaming, isReadyToPlay, bufferingProgress]);
-
-  useEffect(() => {
-    if (bufferingProgress < 10) setLoadingMessage('Conectando con Telegram...');
-    else if (bufferingProgress < 25) setLoadingMessage('Descargando buffer de seguridad...');
-    else setLoadingMessage('Casi listo...');
-  }, [bufferingProgress]);
   const mediaSourceRef = useRef<MediaSource | null>(null);
 
   const activeEdits = overrideEdits || edits;
@@ -154,20 +130,11 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
               setStreaming(true);
               setLoading(false);
               
-              const safeMessageId = String(messageId);
-              const streamUrl = `/stream-media/${fileId}-${safeMessageId}.mp4`;
+              const streamUrl = `/stream-media/${fileId}-${messageId}.mp4`;
               let totalSize = 0;
               if ((media as any).document?.size) {
                 const sizeObj = (media as any).document.size;
-                if (typeof sizeObj === 'number') {
-                  totalSize = sizeObj;
-                } else if (typeof sizeObj === 'bigint') {
-                  totalSize = Number(sizeObj);
-                } else if (sizeObj && typeof sizeObj === 'object' && 'toJSNumber' in sizeObj) {
-                  totalSize = sizeObj.toJSNumber();
-                } else {
-                  totalSize = Number(sizeObj);
-                }
+                totalSize = typeof sizeObj === 'number' ? sizeObj : (sizeObj.toJSNumber ? sizeObj.toJSNumber() : Number(sizeObj));
               }
               const mimeType = (media as any).document?.mimeType || 'video/mp4';
               
@@ -189,20 +156,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                         pullResolver();
                         pullResolver = null;
                       }
-                    } else if (e.data.type === 'UPDATE_STRATEGY') {
-                      // Handle strategy updates (e.g., increase workers)
-                      console.log('Strategy update:', e.data.strategy);
                     }
                   };
-
-                  // Force initial 1KB request
-                  const initialRequest = new Api.upload.GetFile({
-                    location: utils.getFileInfo(media as any).location,
-                    offset: bigInt(0),
-                    limit: 1024,
-                  });
-                  await client.invoke(initialRequest);
-                  console.log('Initial 1KB request successful');
 
                   try {
                     const range = event.data.range;
@@ -243,9 +198,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const chunkSize = 1024 * 1024; // 1MB chunks for faster streaming
                     
                     // Pre-buffering logic: 15% of total size or 50MB (whichever is smaller)
-                    const safeTotalSize = Number(totalSize);
-                    const threshold = Math.min(safeTotalSize * 0.15, 50 * 1024 * 1024);
-                    const minThreshold = Math.min(5 * 1024 * 1024, safeTotalSize);
+                    const threshold = Math.min(totalSize * 0.15, 50 * 1024 * 1024);
+                    const minThreshold = Math.min(5 * 1024 * 1024, totalSize);
                     const actualThreshold = Math.max(threshold, minThreshold);
                     
                     const isInitialRequest = start === 0;
@@ -455,13 +409,6 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
     return () => { 
       isMounted = false; 
       if (currentBlobUrl) {
-        // Notify Service Worker to cancel streaming
-        if (navigator.serviceWorker.controller) {
-          navigator.serviceWorker.controller.postMessage({
-            type: 'CANCEL_STREAM',
-            url: currentBlobUrl
-          });
-        }
         URL.revokeObjectURL(currentBlobUrl);
       }
       if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
@@ -538,84 +485,47 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
           </div>
         </div>
       )}
-      {streaming && !isReadyToPlay && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center">
-          {/* Blur background with thumbnail */}
-          <div 
-            className="absolute inset-0 bg-cover bg-center blur-xl"
-            style={{ backgroundImage: `url(${url})` }}
-          />
-          <div className="absolute inset-0 bg-black/60" />
-          
-          {/* Circular Progress */}
-          <div className="relative w-32 h-32 mb-6">
-            <svg className="w-full h-full" viewBox="0 0 100 100">
-              <circle className="text-slate-700" strokeWidth="8" stroke="currentColor" fill="transparent" r="40" cx="50" cy="50" />
-              <circle 
-                className="text-indigo-500 transition-all duration-300" 
-                strokeWidth="8" 
-                strokeDasharray={251.2} 
-                strokeDashoffset={251.2 - (bufferingProgress / 100) * 251.2} 
-                strokeLinecap="round" 
-                stroke="currentColor" 
-                fill="transparent" 
-                r="40" 
-                cx="50" 
-                cy="50" 
-              />
-            </svg>
-            <div className="absolute inset-0 flex items-center justify-center text-white text-xl font-bold">
+      {streaming && (
+        <div className="absolute top-2 right-2 z-20 flex items-center gap-1 bg-indigo-600/80 text-white text-[10px] px-2 py-0.5 rounded-full backdrop-blur-sm">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Streaming
+        </div>
+      )}
+      {isPreBuffering && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-900/80 backdrop-blur-sm transition-opacity duration-300">
+          <div className="relative w-16 h-16 mb-4">
+            <div className="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
+            <div 
+              className="absolute inset-0 border-4 border-indigo-500 rounded-full border-t-transparent animate-spin"
+              style={{ animationDuration: '1.5s' }}
+            ></div>
+            <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white">
               {Math.round(bufferingProgress)}%
             </div>
           </div>
-          
-          <p className="text-white font-medium text-lg animate-pulse">{loadingMessage}</p>
+          <p className="text-white font-medium animate-pulse">Preparando video...</p>
+          <p className="text-white/60 text-[10px] mt-1">Garantizando reproducción fluida</p>
+          <div className="w-48 h-1 bg-white/10 rounded-full mt-4 overflow-hidden">
+            <div 
+              className="h-full bg-indigo-500 transition-all duration-300 ease-out"
+              style={{ width: `${bufferingProgress}%` }}
+            ></div>
+          </div>
         </div>
       )}
       <video
         ref={videoRef}
         src={url}
-        className={cn("w-full h-full object-cover transition-opacity duration-500", (!isReadyToPlay && !isThumbnail) ? "opacity-0" : "opacity-100")}
+        className="w-full h-full object-cover"
         muted
         playsInline
         preload="auto"
-        autoPlay={isReadyToPlay && !isThumbnail}
+        autoPlay={!isThumbnail}
         loop={!isThumbnail}
         controls={!isThumbnail}
         onLoadedData={(e) => {
           if (isThumbnail) {
             e.currentTarget.currentTime = 0.1;
-          }
-        }}
-        onTimeUpdate={(e) => {
-          if (!isThumbnail) {
-            const video = e.currentTarget;
-            const buffered = video.buffered;
-            let bufferEnd = 0;
-            for (let i = 0; i < buffered.length; i++) {
-              if (video.currentTime >= buffered.start(i) && video.currentTime <= buffered.end(i)) {
-                bufferEnd = buffered.end(i);
-                break;
-              }
-            }
-            const bufferRemaining = bufferEnd - video.currentTime;
-            
-            // Check for 40% buffer
-            if (!isReadyToPlay && bufferingProgress >= 40) {
-              setIsReadyToPlay(true);
-              video.play();
-            }
-
-            // Silent Recovery Strategy & Catch-up Prevention
-            if (navigator.serviceWorker.controller) {
-              navigator.serviceWorker.controller.postMessage({
-                type: 'UPDATE_STREAM_STRATEGY',
-                url: url,
-                bufferRemaining: bufferRemaining,
-                isLowBuffer: bufferRemaining < 5 && bufferEnd < video.duration,
-                isReadyToPlay: isReadyToPlay
-              });
-            }
           }
         }}
         onMouseOver={(e) => isThumbnail && e.currentTarget.play()}

@@ -19,24 +19,10 @@ self.addEventListener('activate', (event) => {
 });
 
 const streams = new Map();
-const streamStrategies = new Map();
 
 self.addEventListener('message', (event) => {
   if (event.data.type === 'REGISTER_STREAM') {
     streams.set(event.data.url, event.data.port);
-  } else if (event.data.type === 'CANCEL_STREAM') {
-    const port = streams.get(event.data.url);
-    if (port) {
-      port.postMessage({ type: 'CANCEL' });
-      streams.delete(event.data.url);
-      streamStrategies.delete(event.data.url);
-    }
-  } else if (event.data.type === 'UPDATE_STREAM_STRATEGY') {
-    streamStrategies.set(event.data.url, event.data);
-    const port = streams.get(event.data.url);
-    if (port) {
-      port.postMessage({ type: 'UPDATE_STRATEGY', strategy: event.data });
-    }
   }
 });
 
