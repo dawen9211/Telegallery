@@ -19,6 +19,7 @@ self.addEventListener('activate', (event) => {
 });
 
 const streams = new Map();
+const progressChannel = new BroadcastChannel('tele_buffer');
 
 self.addEventListener('message', (event) => {
   if (event.data.type === 'REGISTER_STREAM') {
@@ -45,6 +46,9 @@ self.addEventListener('fetch', (event) => {
       
       let streamController;
       let headersSent = false;
+      let downloadedBytes = 0;
+      let totalBytes = 0;
+
       const stream = new ReadableStream({
         start(controller) {
           streamController = controller;
@@ -65,10 +69,12 @@ self.addEventListener('fetch', (event) => {
       messageChannel.port1.onmessage = (e) => {
         if (e.data.type === 'HEADERS') {
           headersSent = true;
+          totalBytes = e.data.total;
           const headers = {
             'Accept-Ranges': 'bytes',
             'Content-Length': String(e.data.contentLength),
-            'Content-Type': e.data.contentType || 'video/mp4'
+            'Content-Type': e.data.contentType || 'video/mp4',
+            'Cache-Control': 'no-cache'
           };
           
           if (e.data.isRange) {
@@ -81,7 +87,20 @@ self.addEventListener('fetch', (event) => {
             headers
           }));
         } else if (e.data.type === 'CHUNK') {
-          streamController.enqueue(new Uint8Array(e.data.chunk));
+          const chunk = new Uint8Array(e.data.chunk);
+          downloadedBytes += chunk.byteLength;
+          
+          // Send progress to UI
+          if (totalBytes > 0) {
+            progressChannel.postMessage({
+              url: streamUrl,
+              downloaded: downloadedBytes,
+              total: totalBytes,
+              percent: (downloadedBytes / totalBytes) * 100
+            });
+          }
+
+          streamController.enqueue(chunk);
         } else if (e.data.type === 'DONE') {
           streamController.close();
         } else if (e.data.type === 'ERROR') {

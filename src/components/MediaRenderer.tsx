@@ -54,7 +54,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   const [error, setError] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [bufferingProgress, setBufferingProgress] = useState(0);
-  const [isPreBuffering, setIsPreBuffering] = useState(false);
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
+  const [isReady, setIsReady] = useState(false);
   const [thumbnailUrl, setThumbnailUrl] = useState<string>('');
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaSourceRef = useRef<MediaSource | null>(null);
@@ -63,12 +64,42 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   const activeEdits = overrideEdits || edits;
 
   useEffect(() => {
+    if (!streaming || !url) return;
+
+    const channel = new BroadcastChannel('tele_buffer');
+    channel.onmessage = (event) => {
+      if (event.data.url === url) {
+        const percent = event.data.percent;
+        const downloaded = event.data.downloaded;
+        setBufferingProgress(percent);
+        setDownloadedBytes(downloaded);
+
+        // Threshold: 10% or 5MB
+        if (!isReady && (percent >= 10 || downloaded >= 5 * 1024 * 1024)) {
+          setIsReady(true);
+        }
+      }
+    };
+
+    return () => channel.close();
+  }, [streaming, url, isReady]);
+
+  useEffect(() => {
+    if (isReady && videoRef.current && !isThumbnail) {
+      videoRef.current.play().catch(err => console.warn('Auto-play failed:', err));
+    }
+  }, [isReady, isThumbnail]);
+
+  useEffect(() => {
     let isMounted = true;
     let currentBlobUrl: string | null = null;
 
     const fetchUrl = async () => {
       if (isLarge && sessionString && chatId && messageId && apiId && apiHash) {
         setLoading(true);
+        setIsReady(false);
+        setBufferingProgress(0);
+        setDownloadedBytes(0);
         try {
           const client = await getTelegramClient(sessionString, apiId, apiHash);
           
@@ -215,7 +246,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const dcId = info.dcId;
                     
                     const chunkSize = 512 * 1024; // 512KB chunks
-                    const headerPrefetchSize = 256 * 1024; // 256KB for header
+                    const headerPrefetchSize = 512 * 1024; // 512KB for header (Immediate delivery)
                     
                     // Concurrency adjustment: 4 workers for start of large files, 8 for the rest
                     let concurrentRequests = totalSize > 50 * 1024 * 1024 ? 4 : 8;
@@ -486,23 +517,53 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
           Streaming
         </div>
       )}
-      {isPreBuffering && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-900/80 backdrop-blur-sm transition-opacity duration-300">
-          <div className="relative w-16 h-16 mb-4">
-            <div className="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
-            <div 
-              className="absolute inset-0 border-4 border-indigo-500 rounded-full border-t-transparent animate-spin"
-              style={{ animationDuration: '1.5s' }}
-            ></div>
-            <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white">
+      {!isThumbnail && !isReady && streaming && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-900/90 backdrop-blur-md transition-opacity duration-500">
+          <div className="relative w-24 h-24 mb-6">
+            {/* Circular Spinner */}
+            <svg className="w-full h-full transform -rotate-90">
+              <circle
+                cx="48"
+                cy="48"
+                r="40"
+                stroke="currentColor"
+                strokeWidth="6"
+                fill="transparent"
+                className="text-slate-700"
+              />
+              <circle
+                cx="48"
+                cy="48"
+                r="40"
+                stroke="currentColor"
+                strokeWidth="6"
+                fill="transparent"
+                strokeDasharray={251.2}
+                strokeDashoffset={251.2 - (251.2 * Math.min(bufferingProgress, 100)) / 100}
+                strokeLinecap="round"
+                className="text-indigo-500 transition-all duration-500 ease-out"
+              />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center text-lg font-bold text-white font-mono">
               {Math.round(bufferingProgress)}%
             </div>
           </div>
-          <p className="text-white font-medium animate-pulse">Preparando video...</p>
-          <p className="text-white/60 text-[10px] mt-1">Garantizando reproducción fluida</p>
-          <div className="w-48 h-1 bg-white/10 rounded-full mt-4 overflow-hidden">
+          <div className="text-center space-y-2">
+            <p className="text-white font-semibold text-lg animate-pulse">Optimizando Streaming...</p>
+            <p className="text-indigo-300/80 text-sm font-medium">
+              {downloadedBytes > 1024 * 1024 
+                ? `${(downloadedBytes / (1024 * 1024)).toFixed(1)}MB descargados`
+                : `${(downloadedBytes / 1024).toFixed(0)}KB descargados`}
+            </p>
+            <p className="text-slate-400 text-xs max-w-[200px] mx-auto leading-relaxed">
+              Preparando buffer de seguridad para reproducción sin cortes
+            </p>
+          </div>
+          
+          {/* Progress Bar Bottom */}
+          <div className="absolute bottom-12 w-64 h-1.5 bg-slate-800 rounded-full overflow-hidden border border-white/5">
             <div 
-              className="h-full bg-indigo-500 transition-all duration-300 ease-out"
+              className="h-full bg-gradient-to-r from-indigo-600 to-violet-500 transition-all duration-500 ease-out shadow-[0_0_10px_rgba(79,70,229,0.5)]"
               style={{ width: `${bufferingProgress}%` }}
             ></div>
           </div>
@@ -513,10 +574,11 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
         src={url}
         poster={thumbnailUrl}
         className="w-full h-full object-cover"
+        style={{ display: (!isThumbnail && streaming && !isReady) ? 'none' : 'block' }}
         muted
         playsInline
         preload="auto"
-        autoPlay={!isThumbnail}
+        autoPlay={!isThumbnail && (isReady || !streaming)}
         loop={!isThumbnail}
         controls={!isThumbnail}
         onLoadedData={(e) => {

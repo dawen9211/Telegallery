@@ -70,8 +70,10 @@ export const downloadFile = async (
     workers?: number;
   } = {}
 ) => {
+  // Use 8 workers and 512KB partSize for maximum speed
   return (client as any).downloadFile(media, {
     progressCallback: options.progressCallback,
-    workers: options.workers || 8, // Default to 8 workers for faster downloads
+    workers: options.workers || 8,
+    partSize: 512 * 1024,
   });
 };
