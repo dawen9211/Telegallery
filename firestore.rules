@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: media
+    // Document ID: auto-generated
+    // Fields:
+    //   - uid: string (required, immutable) - User ID of the owner
+    //   - fileId: string (required) - Telegram file ID
+    //   - messageId: number (optional) - Telegram message ID
+    //   - type: string (required, enum: ['photo', 'video'])
+    //   - name: string (required, size < 255)
+    //   - timestamp: timestamp (required)
+    //   - album: string (required, size < 50)
+    //   - chatId: string (required, size < 50)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isValidMediaItem(data) {
+      return data.keys().hasAll(['uid', 'fileId', 'type', 'name', 'timestamp', 'album', 'chatId']) &&
+             data.uid is string &&
+             data.fileId is string &&
+             data.type in ['photo', 'video'] &&
+             data.name is string && data.name.size() < 255 &&
+             data.timestamp is timestamp &&
+             data.album is string && data.album.size() < 50 &&
+             data.chatId is string && data.chatId.size() < 50;
+    }
+
+    match /media/{mediaId} {
+      // Users can only read their own media items
+      allow read: if isAuthenticated() && (resource == null || resource.data.uid == request.auth.uid);
+      
+      // Users can only create items for themselves
+      allow create: if isAuthenticated() && 
+                      request.resource.data.uid == request.auth.uid &&
+                      isValidMediaItem(request.resource.data);
+      
+      // Users can only update their own items, and cannot change ownership
+      allow update: if isAuthenticated() && 
+                      isDocOwner() &&
+                      request.resource.data.uid == resource.data.uid &&
+                      isValidMediaItem(request.resource.data);
+      
+      // Users can only delete their own items
+      allow delete: if isAuthenticated() && isDocOwner();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

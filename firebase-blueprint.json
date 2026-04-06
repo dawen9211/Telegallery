@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "MediaItem": {
+      "title": "MediaItem",
+      "description": "Represents a photo or video stored in Telegram and tracked in Firestore.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firestore document ID." },
+        "uid": { "type": "string", "description": "The user ID who uploaded the item." },
+        "fileId": { "type": "string", "description": "The Telegram file_id." },
+        "messageId": { "type": "number", "description": "The Telegram message_id." },
+        "type": { "type": "string", "enum": ["photo", "video"] },
+        "name": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "album": { "type": "string" },
+        "chatId": { "type": "string", "description": "The Telegram chat_id where the item is stored." }
+      },
+      "required": ["uid", "fileId", "type", "name", "album", "chatId"]
+    }
+  },
+  "firestore": {
+    "/media": {
+      "schema": "MediaItem",
+      "description": "Collection of all media items across all users."
+    }
+  }
+}
