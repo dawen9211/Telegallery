@@ -215,16 +215,18 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const dcId = info.dcId;
                     
                     const chunkSize = 512 * 1024; // 512KB chunks
-                    const concurrentRequests = 8; // 8 workers
+                    const headerPrefetchSize = 256 * 1024; // 256KB for header
+                    
+                    // Concurrency adjustment: 4 workers for start of large files, 8 for the rest
+                    let concurrentRequests = totalSize > 50 * 1024 * 1024 ? 4 : 8;
                     
                     let currentOffset = alignedStart;
                     let downloaded = 0;
                     let isFirstChunk = true;
                     
-                    const prefetchQueue: Promise<{ offset: number, bytes: Buffer }>[] = [];
-                    
-                    const fetchChunk = async (offset: number) => {
+                    const fetchChunk = async (offset: number, customLimit?: number) => {
                       let retries = 0;
+                      const maxRetries = 5; // Increased retries for stability
                       while (true) {
                         if (cancelled || cancelledRef.current) throw new Error('Cancelled');
                         try {
@@ -232,21 +234,51 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                           const request = new Api.upload.GetFile({
                             location: fileLocation,
                             offset: bigInt(offset),
-                            limit: chunkSize,
+                            limit: customLimit || chunkSize,
                           });
                           const result = await client.invokeWithSender(request, sender) as Api.upload.File;
+                          
+                          // If we successfully fetched a chunk, we can increase concurrency for the rest of the file
+                          if (downloaded > 1024 * 1024) {
+                            concurrentRequests = 8;
+                          }
+                          
                           return { offset, bytes: result.bytes };
                         } catch (err: any) {
                           if (err.errorMessage === 'FLOOD_WAIT') {
                             await new Promise(r => setTimeout(r, err.seconds * 1000));
                             continue;
                           }
+                          
+                          // Handle connection drops or other errors with retries
                           retries++;
-                          if (retries >= 3 || cancelled || cancelledRef.current) throw err;
-                          await new Promise(r => setTimeout(r, 1000 * retries));
+                          console.warn(`[Streaming] Error fetching chunk at ${offset} (attempt ${retries}):`, err);
+                          
+                          if (retries >= maxRetries || cancelled || cancelledRef.current) {
+                            throw err;
+                          }
+                          
+                          // Exponential backoff
+                          await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, retries), 10000)));
                         }
                       }
                     };
+                    
+                    // Pre-fetch header if starting from 0
+                    if (start === 0 && totalSize > headerPrefetchSize) {
+                      console.log('[Streaming] Pre-fetching header (256KB)...');
+                      const header = await fetchChunk(0, headerPrefetchSize);
+                      const headerBuffer = new Uint8Array(header.bytes).buffer;
+                      event.data.port.postMessage({
+                        type: 'CHUNK',
+                        chunk: headerBuffer
+                      }, [headerBuffer]);
+                      downloaded += header.bytes.length;
+                      currentOffset = header.bytes.length;
+                      isFirstChunk = false; // Already handled first chunk
+                    }
+                    
+                    const prefetchQueue: Promise<{ offset: number, bytes: Buffer }>[] = [];
                     
                     const fillQueue = () => {
                       while (prefetchQueue.length < concurrentRequests && !cancelled && !cancelledRef.current && currentOffset < start + contentLength) {

@@ -72,15 +72,12 @@ self.addEventListener('fetch', (event) => {
           };
           
           if (e.data.isRange) {
-            const start = String(e.data.start).replace(/\[object Object\]/g, '0');
-            const end = String(e.data.end).replace(/\[object Object\]/g, '0');
-            const total = String(e.data.total).replace(/\[object Object\]/g, '0');
-            headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
+            headers['Content-Range'] = `bytes ${e.data.start}-${e.data.end}/${e.data.total}`;
           }
           
-          // Always respond with 206 for media streaming to satisfy browser requirements
           resolve(new Response(stream, {
             status: 206,
+            statusText: 'Partial Content',
             headers
           }));
         } else if (e.data.type === 'CHUNK') {
