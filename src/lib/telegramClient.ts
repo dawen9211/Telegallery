@@ -85,6 +85,7 @@ export const uploadLargeFile = async (
     return await client.uploadFile({
       file,
       workers: 4,
+      partSize: 512 * 1024, // 512KB
       onProgress: (progress: number) => {
         if (onProgress) onProgress(progress);
       },

@@ -1135,7 +1135,7 @@ export default function App() {
         let fileId = '';
         let messageId = 0;
         const isVideo = file.type.startsWith('video/');
-        const isLarge = file.size > 20 * 1024 * 1024;
+        const isLarge = file.size > 50 * 1024 * 1024;
 
         const useGramJS = !!(client && (isLarge || !botToken));
 

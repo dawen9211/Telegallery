@@ -55,35 +55,20 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   const [streaming, setStreaming] = useState(false);
   const [bufferingProgress, setBufferingProgress] = useState(0);
   const [isReadyToPlay, setIsReadyToPlay] = useState(false);
-  const [isBuffering, setIsBuffering] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState('Conectando con Telegram...');
-  const [retryCount, setRetryCount] = useState(0);
-  const [forceStandard, setForceStandard] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const ensureServiceWorkerActive = async () => {
-    if (!navigator.serviceWorker.controller) {
-      console.log('Service Worker not active, registering...');
-      await navigator.serviceWorker.register('/sw.js');
-      // Wait for the SW to become active
-      await new Promise((resolve) => {
-        navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
-      });
-    }
-  };
-
   useEffect(() => {
     if (streaming && !isReadyToPlay) {
+      // Timeout for 0% progress
       connectionTimeoutRef.current = setTimeout(() => {
         if (bufferingProgress === 0) {
-          console.warn('Connection stalled at 0% for 10s, falling back to standard playback...');
-          setLoadingMessage('Usando modo estándar (fallback)...');
-          setStreaming(false);
-          setForceStandard(true);
-          setRetryCount(prev => prev + 1);
+          console.warn('Connection stalled at 0%, re-initializing...');
+          setLoadingMessage('Reintentando conexión...');
+          // Trigger a re-fetch or re-init here if needed
         }
-      }, 10000);
+      }, 7000);
     }
     return () => {
       if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
@@ -91,43 +76,10 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   }, [streaming, isReadyToPlay, bufferingProgress]);
 
   useEffect(() => {
-    if (bufferingProgress < 5) setLoadingMessage('Conectando con Telegram...');
-    else if (bufferingProgress < 10) setLoadingMessage('Descargando buffer inicial (10%)...');
+    if (bufferingProgress < 10) setLoadingMessage('Conectando con Telegram...');
+    else if (bufferingProgress < 25) setLoadingMessage('Descargando buffer de seguridad...');
     else setLoadingMessage('Casi listo...');
   }, [bufferingProgress]);
-
-  useEffect(() => {
-    if (!isBuffering && videoRef.current && !isThumbnail) {
-      videoRef.current.play().catch(e => console.warn('Autoplay prevented:', e));
-    }
-  }, [isBuffering, isThumbnail]);
-
-  // Listen for progress messages from SW via BroadcastChannel 'tele_buffer'
-  useEffect(() => {
-    const channel = new BroadcastChannel('tele_buffer');
-    channel.onmessage = (event) => {
-      if (event.data.type === 'PROGRESS' && event.data.fileId === fileId) {
-        setBufferingProgress(event.data.progress);
-        
-        // SW starts responding at 10%
-        if (event.data.progress >= 10) {
-          setIsReadyToPlay(true);
-        }
-        
-        // UI unblocks and starts playing at 40%
-        if (event.data.progress >= 40 && isBuffering) {
-          setIsBuffering(false);
-          if (videoRef.current && !isThumbnail) {
-            videoRef.current.play().catch(e => console.warn('Autoplay prevented:', e));
-          }
-        }
-      }
-    };
-    return () => {
-      channel.close();
-    };
-  }, [fileId, isBuffering, isThumbnail]);
-
   const mediaSourceRef = useRef<MediaSource | null>(null);
 
   const activeEdits = overrideEdits || edits;
@@ -137,9 +89,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
     let currentBlobUrl: string | null = null;
 
     const fetchUrl = async () => {
-      setIsBuffering(true);
-      setBufferingProgress(0);
-      if (!forceStandard && isLarge && sessionString && chatId && messageId && apiId && apiHash) {
+      if (isLarge && sessionString && chatId && messageId && apiId && apiHash) {
         setLoading(true);
         try {
           const client = await getTelegramClient(sessionString, apiId, apiHash);
@@ -151,8 +101,6 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
             const media = messages[0].media;
             
             console.log('Media found for message', messageId, ':', media);
-            console.log('Media type:', type);
-            console.log('Is thumbnail:', isThumbnail);
 
             if (isThumbnail) {
               let buffer: any = null;
@@ -201,9 +149,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                 setError(true);
                 setLoading(false);
               }
-            } else if (type === 'video' && 'serviceWorker' in navigator) {
+            } else if (type === 'video' && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
               // IMPLEMENT STREAMING FOR VIDEOS VIA SERVICE WORKER
-              await ensureServiceWorkerActive();
               setStreaming(true);
               setLoading(false);
               
@@ -288,12 +235,28 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const alignSize = 4096;
                     const alignedStart = Math.floor(start / alignSize) * alignSize;
                     const skipBytes = start - alignedStart;
-                    
+
                     const info = utils.getFileInfo(media as any);
                     const fileLocation = info.location;
                     const dcId = info.dcId;
                     
-                    const chunkSize = 512 * 1024; // 512KB chunks for immediate start
+                    const chunkSize = 1024 * 1024; // 1MB chunks for faster streaming
+                    
+                    // Pre-buffering logic: 15% of total size or 50MB (whichever is smaller)
+                    const safeTotalSize = Number(totalSize);
+                    const threshold = Math.min(safeTotalSize * 0.15, 50 * 1024 * 1024);
+                    const minThreshold = Math.min(5 * 1024 * 1024, safeTotalSize);
+                    const actualThreshold = Math.max(threshold, minThreshold);
+                    
+                    const isInitialRequest = start === 0;
+                    let isPreBufferingActive = isInitialRequest;
+                    
+                    if (isPreBufferingActive) {
+                      setIsPreBuffering(true);
+                      setBufferingProgress(0);
+                    }
+
+                    const concurrentRequests = isPreBufferingActive ? 5 : 3; // Use more workers during pre-buffering
                     
                     let currentOffset = alignedStart;
                     let downloaded = 0;
@@ -326,7 +289,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     };
                     
                     const fillQueue = () => {
-                      const currentConcurrency = 4;
+                      const currentConcurrency = isPreBufferingActive ? 5 : 3;
                       while (prefetchQueue.length < currentConcurrency && !cancelled && currentOffset < start + contentLength) {
                         prefetchQueue.push(fetchChunk(currentOffset));
                         currentOffset += chunkSize;
@@ -334,6 +297,9 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     };
                     
                     fillQueue();
+                    
+                    const preBufferedChunks: Buffer[] = [];
+                    let preBufferedSize = 0;
 
                     while (!cancelled) {
                       const nextPromise = prefetchQueue.shift();
@@ -345,6 +311,44 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                       let chunkToSend = result.bytes;
                       
                       if (chunkToSend.length === 0) break; // EOF
+
+                      if (isPreBufferingActive) {
+                        preBufferedChunks.push(chunkToSend);
+                        preBufferedSize += chunkToSend.length;
+                        
+                        const progress = Math.min((preBufferedSize / actualThreshold) * 100, 100);
+                        setBufferingProgress(progress);
+                        
+                        if (preBufferedSize >= actualThreshold) {
+                          isPreBufferingActive = false;
+                          setIsPreBuffering(false);
+                          
+                          // Release all pre-buffered chunks
+                          for (const bufferedChunk of preBufferedChunks) {
+                            let toSend = bufferedChunk;
+                            if (isFirstChunk && skipBytes > 0) {
+                              toSend = toSend.slice(skipBytes);
+                              isFirstChunk = false;
+                            }
+                            
+                            const remaining = contentLength - downloaded;
+                            if (toSend.length > remaining) {
+                              toSend = toSend.slice(0, remaining);
+                            }
+                            
+                            const chunkCopy = new Uint8Array(toSend).buffer;
+                            event.data.port.postMessage({
+                              type: 'CHUNK',
+                              chunk: chunkCopy
+                            }, [chunkCopy]);
+                            
+                            downloaded += toSend.length;
+                            pullRequested--;
+                          }
+                          preBufferedChunks.length = 0; // Clear memory
+                        }
+                        continue; // Keep buffering
+                      }
                       
                       if (isFirstChunk && skipBytes > 0) {
                         chunkToSend = chunkToSend.slice(skipBytes);
@@ -368,9 +372,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                       if (downloaded >= contentLength) break;
                       
                       pullRequested--;
-                      // Allow more prefetching to avoid stalling
-                      if (pullRequested <= -2) {
-                        // Wait for PULL request from service worker if we are getting ahead too much
+                      if (pullRequested <= 0) {
+                        // Wait for PULL request from service worker to avoid buffering too much in memory
                         await new Promise<void>((resolve) => {
                           pullResolver = resolve;
                         });
@@ -390,14 +393,11 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
               navigator.serviceWorker.controller.postMessage({
                 type: 'REGISTER_STREAM',
                 url: streamUrl,
-                port: messageChannel.port2,
-                totalSize,
-                fileId
+                port: messageChannel.port2
               }, [messageChannel.port2]);
               
               currentBlobUrl = streamUrl;
               setUrl(streamUrl);
-
             } else {
               // Full media download for photos or if streaming not supported
               const buffer = await client.downloadMedia(media);
@@ -430,9 +430,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
       }
 
       if (!botToken || !fileId) return;
-      if (isLarge && !forceStandard) {
+      if (isLarge) {
         setLoading(false);
-        setError(true);
         return;
       }
       setLoading(true);
@@ -471,7 +470,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
         } catch (e) {}
       }
     };
-  }, [fileId, botToken, isLarge, sessionString, chatId, messageId, apiId, apiHash, retryCount]);
+  }, [fileId, botToken, isLarge, sessionString, chatId, messageId, apiId, apiHash]);
 
   if (isLarge && !url && loading) {
     return (
@@ -539,14 +538,11 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
           </div>
         </div>
       )}
-      {streaming && isBuffering && (
-        <div 
-          className="absolute inset-0 z-30 flex flex-col items-center justify-center backdrop-blur-[15px]"
-          onPointerDown={(e) => e.stopPropagation()}
-        >
+      {streaming && !isReadyToPlay && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center">
           {/* Blur background with thumbnail */}
           <div 
-            className="absolute inset-0 bg-cover bg-center"
+            className="absolute inset-0 bg-cover bg-center blur-xl"
             style={{ backgroundImage: `url(${url})` }}
           />
           <div className="absolute inset-0 bg-black/60" />
@@ -573,19 +569,17 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
             </div>
           </div>
           
-          <p className="text-white font-medium text-lg animate-pulse text-center px-4">
-            {Math.round(bufferingProgress)}% cargado. Preparando reproducción fluida....
-          </p>
+          <p className="text-white font-medium text-lg animate-pulse">{loadingMessage}</p>
         </div>
       )}
       <video
         ref={videoRef}
         src={url}
-        className={cn("w-full h-full object-cover transition-opacity duration-500", (isBuffering && !isThumbnail) ? "opacity-0" : "opacity-100")}
+        className={cn("w-full h-full object-cover transition-opacity duration-500", (!isReadyToPlay && !isThumbnail) ? "opacity-0" : "opacity-100")}
         muted
         playsInline
         preload="auto"
-        autoPlay={!isBuffering && !isThumbnail}
+        autoPlay={isReadyToPlay && !isThumbnail}
         loop={!isThumbnail}
         controls={!isThumbnail}
         onLoadedData={(e) => {
@@ -606,6 +600,12 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
             }
             const bufferRemaining = bufferEnd - video.currentTime;
             
+            // Check for 40% buffer
+            if (!isReadyToPlay && bufferingProgress >= 40) {
+              setIsReadyToPlay(true);
+              video.play();
+            }
+
             // Silent Recovery Strategy & Catch-up Prevention
             if (navigator.serviceWorker.controller) {
               navigator.serviceWorker.controller.postMessage({
@@ -618,31 +618,11 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
             }
           }
         }}
-        onPointerDown={(e) => {
-          // Prevent event bubbling to parent motion.div in App.tsx
-          // to avoid drag interference when interacting with video controls
-          if (!isThumbnail) {
-            e.stopPropagation();
-          }
-        }}
         onMouseOver={(e) => isThumbnail && e.currentTarget.play()}
         onMouseOut={(e) => {
           if (isThumbnail) {
             e.currentTarget.pause();
             e.currentTarget.currentTime = 0.1;
-          }
-        }}
-        onError={(e) => {
-          console.error('Video error:', e.currentTarget.error);
-          // If the stream was not found by SW (e.g., SW restarted), we can try to re-trigger the fetchUrl logic
-          // by clearing the url and letting the useEffect run again.
-          if (streaming) {
-            console.log('Attempting to recover stream...');
-            setUrl('');
-            setStreaming(false);
-            setIsReadyToPlay(false);
-            setBufferingProgress(0);
-            setRetryCount(prev => prev + 1);
           }
         }}
       />
