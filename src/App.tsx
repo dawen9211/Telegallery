@@ -1913,7 +1913,11 @@ export default function App() {
                   <div className="absolute bottom-0 left-0 h-1 bg-indigo-500/20 w-full overflow-hidden">
                     <div 
                       className="h-full bg-indigo-500 transition-all duration-300 ease-out"
-                      style={{ width: uploadProgress ? `${(uploadProgress.current / uploadProgress.total) * 100}%` : '100%' }}
+                      style={{ 
+                        width: uploadProgress 
+                          ? `${((uploadProgress.current - 1 + (uploadProgress.percent || 0) / 100) / uploadProgress.total) * 100}%` 
+                          : '100%' 
+                      }}
                     />
                   </div>
                 )}
