@@ -293,7 +293,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const fileLocation = info.location;
                     const dcId = info.dcId;
                     
-                    const chunkSize = 1024 * 1024; // 1MB chunks for faster streaming
+                    const chunkSize = 512 * 1024; // 512KB chunks for immediate start
                     
                     let currentOffset = alignedStart;
                     let downloaded = 0;
@@ -368,11 +368,9 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                       if (downloaded >= contentLength) break;
                       
                       pullRequested--;
-                      // Only wait for PULL if we haven't reached 10% yet.
-                      // After 10%, we download at maximum speed in background.
-                      const currentProgress = ((start + downloaded) / totalSize) * 100;
-                      if (pullRequested <= 0 && currentProgress < 10) {
-                        // Wait for PULL request from service worker to avoid buffering too much in memory
+                      // Allow more prefetching to avoid stalling
+                      if (pullRequested <= -2) {
+                        // Wait for PULL request from service worker if we are getting ahead too much
                         await new Promise<void>((resolve) => {
                           pullResolver = resolve;
                         });

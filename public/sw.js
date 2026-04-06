@@ -56,7 +56,7 @@ self.addEventListener('fetch', (event) => {
     const { port, totalSize } = stream;
     const rangeHeader = event.request.headers.get('Range');
     
-    event.respondWith(new Promise((resolve) => {
+    const promise = new Promise((resolve) => {
       const messageChannel = new MessageChannel();
       
       let streamController;
@@ -76,10 +76,8 @@ self.addEventListener('fetch', (event) => {
         if (e.data.type === 'HEADERS') {
           stream.headers = e.data;
           stream.headersSent = true;
-          // We don't resolve yet, we wait for 10% buffer if totalSize is known
-          if (!totalSize || totalSize <= 0) {
-            resolve(createResponse(streamReadable, stream.headers, e.data.isRange));
-          }
+          stream.resolved = true;
+          resolve(createResponse(streamReadable, stream.headers, e.data.isRange || !!rangeHeader));
         } else if (e.data.type === 'CHUNK') {
           stream.downloadedBytes += e.data.chunk.byteLength;
           streamController.enqueue(new Uint8Array(e.data.chunk));
@@ -94,16 +92,10 @@ self.addEventListener('fetch', (event) => {
             channel.close();
             stream.lastProgressUpdate = stream.downloadedBytes;
           }
-
-          // Resolve the response only after 10% buffer is reached
-          if (stream.headersSent && !stream.resolved && progress >= 10) {
-            stream.resolved = true;
-            resolve(createResponse(streamReadable, stream.headers, stream.headers.isRange));
-          }
         } else if (e.data.type === 'DONE') {
           if (!stream.resolved && stream.headersSent) {
              stream.resolved = true;
-             resolve(createResponse(streamReadable, stream.headers, stream.headers.isRange));
+             resolve(createResponse(streamReadable, stream.headers, stream.headers.isRange || !!rangeHeader));
           }
           streamController.close();
         } else if (e.data.type === 'ERROR') {
@@ -119,7 +111,10 @@ self.addEventListener('fetch', (event) => {
         range: rangeHeader,
         port: messageChannel.port2
       }, [messageChannel.port2]);
-    }));
+    });
+
+    event.respondWith(promise);
+    event.waitUntil(promise);
     return;
   }
 });
@@ -128,18 +123,23 @@ function createResponse(stream, headersData, isRange) {
   const headers = {
     'Accept-Ranges': 'bytes',
     'Content-Length': String(headersData.contentLength),
-    'Content-Type': headersData.contentType || 'video/mp4'
+    'Content-Type': headersData.contentType || 'video/mp4',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
   };
   
   if (isRange) {
-    const start = String(headersData.start).replace(/\[object Object\]/g, '0');
-    const end = String(headersData.end).replace(/\[object Object\]/g, '0');
-    const total = String(headersData.total).replace(/\[object Object\]/g, '0');
+    const start = String(headersData.start || 0);
+    const end = String(headersData.end || (headersData.total - 1));
+    const total = String(headersData.total || '*');
     headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
   }
   
   return new Response(stream, {
     status: isRange ? 206 : 200,
+    statusText: isRange ? 'Partial Content' : 'OK',
     headers
   });
 }
