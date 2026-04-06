@@ -55,8 +55,10 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
   const [streaming, setStreaming] = useState(false);
   const [bufferingProgress, setBufferingProgress] = useState(0);
   const [isPreBuffering, setIsPreBuffering] = useState(false);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string>('');
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaSourceRef = useRef<MediaSource | null>(null);
+  const cancelledRef = useRef(false);
 
   const activeEdits = overrideEdits || edits;
 
@@ -76,7 +78,24 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
           if (messages && messages.length > 0 && messages[0].media) {
             const media = messages[0].media;
             
-            console.log('Media found for message', messageId, ':', media);
+            // Always try to get thumbnail first for videos to prioritize UI responsiveness
+            if (type === 'video' && !isThumbnail) {
+              try {
+                let thumbBuffer: any = null;
+                if ((media as any).document && (media as any).document.thumbs) {
+                  const thumbs = (media as any).document.thumbs;
+                  if (thumbs && thumbs.length > 0) {
+                    thumbBuffer = await client.downloadMedia(media, { thumb: thumbs[thumbs.length - 1] });
+                  }
+                }
+                if (thumbBuffer && isMounted) {
+                  const thumbBlob = new Blob([thumbBuffer]);
+                  setThumbnailUrl(URL.createObjectURL(thumbBlob));
+                }
+              } catch (e) {
+                console.warn('Failed to pre-load video thumbnail', e);
+              }
+            }
 
             if (isThumbnail) {
               let buffer: any = null;
@@ -86,7 +105,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                 if (thumbs && thumbs.length > 0) {
                   const thumbToDownload = thumbs[thumbs.length - 1];
                   try {
-                    buffer = await client.downloadMedia(media, { thumb: thumbToDownload });
+                    buffer = await client.downloadMedia(media, { thumb: thumbToDownload, workers: 8 } as any);
                   } catch (e) {
                     console.warn('Failed to download specific document thumb', e);
                   }
@@ -99,7 +118,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                 if (sizes && sizes.length > 0) {
                   const thumbToDownload = sizes[Math.min(sizes.length - 1, 1)];
                   try {
-                    buffer = await client.downloadMedia(media, { thumb: thumbToDownload });
+                    buffer = await client.downloadMedia(media, { thumb: thumbToDownload, workers: 8 } as any);
                   } catch (e) {
                     console.warn('Failed to download specific photo size', e);
                   }
@@ -109,7 +128,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
               // 3. Fallback: try generic thumb
               if (!buffer) {
                 try {
-                  buffer = await client.downloadMedia(media, { thumb: 0 });
+                  buffer = await client.downloadMedia(media, { thumb: 0, workers: 8 } as any);
                 } catch (e) {
                   console.warn(`Generic thumb download failed for ${messageId}`, e);
                 }
@@ -195,20 +214,8 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const fileLocation = info.location;
                     const dcId = info.dcId;
                     
-                    const chunkSize = 512 * 1024; // 512KB chunks for better granularity
-                    
-                    // Pre-buffering logic: Fixed 10MB buffer as requested
-                    const actualThreshold = Math.min(10 * 1024 * 1024, totalSize);
-                    
-                    const isInitialRequest = start === 0;
-                    let isPreBufferingActive = isInitialRequest;
-                    
-                    if (isPreBufferingActive) {
-                      setIsPreBuffering(true);
-                      setBufferingProgress(0);
-                    }
-
-                    const concurrentRequests = 8; // Use 8 workers for better bandwidth saturation
+                    const chunkSize = 512 * 1024; // 512KB chunks
+                    const concurrentRequests = 8; // 8 workers
                     
                     let currentOffset = alignedStart;
                     let downloaded = 0;
@@ -219,6 +226,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     const fetchChunk = async (offset: number) => {
                       let retries = 0;
                       while (true) {
+                        if (cancelled || cancelledRef.current) throw new Error('Cancelled');
                         try {
                           const sender = await client.getSender(dcId);
                           const request = new Api.upload.GetFile({
@@ -234,15 +242,14 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                             continue;
                           }
                           retries++;
-                          if (retries >= 3) throw err;
+                          if (retries >= 3 || cancelled || cancelledRef.current) throw err;
                           await new Promise(r => setTimeout(r, 1000 * retries));
                         }
                       }
                     };
                     
                     const fillQueue = () => {
-                      const currentConcurrency = 8;
-                      while (prefetchQueue.length < currentConcurrency && !cancelled && currentOffset < start + contentLength) {
+                      while (prefetchQueue.length < concurrentRequests && !cancelled && !cancelledRef.current && currentOffset < start + contentLength) {
                         prefetchQueue.push(fetchChunk(currentOffset));
                         currentOffset += chunkSize;
                       }
@@ -250,58 +257,17 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                     
                     fillQueue();
                     
-                    const preBufferedChunks: Buffer[] = [];
-                    let preBufferedSize = 0;
-
-                    while (!cancelled) {
+                    while (!cancelled && !cancelledRef.current) {
                       const nextPromise = prefetchQueue.shift();
                       if (!nextPromise) break;
                       
-                      fillQueue(); // Keep queue full
+                      fillQueue(); 
                       
                       const result = await nextPromise;
                       let chunkToSend = result.bytes;
                       
                       if (chunkToSend.length === 0) break; // EOF
 
-                      if (isPreBufferingActive) {
-                        preBufferedChunks.push(chunkToSend);
-                        preBufferedSize += chunkToSend.length;
-                        
-                        const progress = Math.min((preBufferedSize / actualThreshold) * 100, 100);
-                        setBufferingProgress(progress);
-                        
-                        if (preBufferedSize >= actualThreshold) {
-                          isPreBufferingActive = false;
-                          setIsPreBuffering(false);
-                          
-                          // Release all pre-buffered chunks
-                          for (const bufferedChunk of preBufferedChunks) {
-                            let toSend = bufferedChunk;
-                            if (isFirstChunk && skipBytes > 0) {
-                              toSend = toSend.slice(skipBytes);
-                              isFirstChunk = false;
-                            }
-                            
-                            const remaining = contentLength - downloaded;
-                            if (toSend.length > remaining) {
-                              toSend = toSend.slice(0, remaining);
-                            }
-                            
-                            const chunkCopy = new Uint8Array(toSend).buffer;
-                            event.data.port.postMessage({
-                              type: 'CHUNK',
-                              chunk: chunkCopy
-                            }, [chunkCopy]);
-                            
-                            downloaded += toSend.length;
-                            pullRequested--;
-                          }
-                          preBufferedChunks.length = 0; // Clear memory
-                        }
-                        continue; // Keep buffering
-                      }
-                      
                       if (isFirstChunk && skipBytes > 0) {
                         chunkToSend = chunkToSend.slice(skipBytes);
                         isFirstChunk = false;
@@ -312,7 +278,6 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                         chunkToSend = chunkToSend.slice(0, remaining);
                       }
                       
-                      // We need to copy the buffer because it might be transferred
                       const chunkCopy = new Uint8Array(chunkToSend).buffer;
                       
                       event.data.port.postMessage({
@@ -325,14 +290,13 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
                       
                       pullRequested--;
                       if (pullRequested <= 0) {
-                        // Wait for PULL request from service worker to avoid buffering too much in memory
                         await new Promise<void>((resolve) => {
                           pullResolver = resolve;
                         });
                       }
                     }
                     
-                    if (!cancelled) {
+                    if (!cancelled && !cancelledRef.current) {
                       event.data.port.postMessage({ type: 'DONE' });
                     }
                   } catch (err) {
@@ -352,7 +316,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
               setUrl(streamUrl);
             } else {
               // Full media download for photos or if streaming not supported
-              const buffer = await client.downloadMedia(media);
+              const buffer = await client.downloadMedia(media, { workers: 8 } as any);
               if (buffer && isMounted) {
                 const blob = new Blob([buffer]);
                 const newUrl = URL.createObjectURL(blob);
@@ -406,6 +370,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
     fetchUrl();
     return () => { 
       isMounted = false; 
+      cancelledRef.current = true;
       if (currentBlobUrl) {
         URL.revokeObjectURL(currentBlobUrl);
       }
@@ -514,6 +479,7 @@ export const MediaRenderer: React.FC<MediaRendererProps> = ({
       <video
         ref={videoRef}
         src={url}
+        poster={thumbnailUrl}
         className="w-full h-full object-cover"
         muted
         playsInline

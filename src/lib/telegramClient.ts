@@ -143,7 +143,7 @@ export const downloadFile = async (
     workers?: number;
   } = {}
 ) => {
-  return client.downloadFile(media, {
+  return (client as any).downloadFile(media, {
     progressCallback: options.progressCallback,
     workers: options.workers || 8, // Default to 8 workers for faster downloads
   });

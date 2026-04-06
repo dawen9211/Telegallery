@@ -45,11 +45,6 @@ self.addEventListener('fetch', (event) => {
       
       let streamController;
       let headersSent = false;
-      let bufferedChunks = [];
-      let bufferedSize = 0;
-      let isBuffering = true;
-      const BUFFER_THRESHOLD = 10 * 1024 * 1024; // 10MB buffer
-
       const stream = new ReadableStream({
         start(controller) {
           streamController = controller;
@@ -61,7 +56,7 @@ self.addEventListener('fetch', (event) => {
           messageChannel.port1.postMessage({ type: 'CANCEL' });
         }
       }, {
-        highWaterMark: 15 * 1024 * 1024, // Increased highWaterMark
+        highWaterMark: 1024 * 1024, // 1MB buffer for smoothness
         size(chunk) {
           return chunk.byteLength || 1;
         }
@@ -77,39 +72,20 @@ self.addEventListener('fetch', (event) => {
           };
           
           if (e.data.isRange) {
-            // Ensure values are strictly numbers/strings, not objects
             const start = String(e.data.start).replace(/\[object Object\]/g, '0');
             const end = String(e.data.end).replace(/\[object Object\]/g, '0');
             const total = String(e.data.total).replace(/\[object Object\]/g, '0');
             headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
           }
           
+          // Always respond with 206 for media streaming to satisfy browser requirements
           resolve(new Response(stream, {
-            status: e.data.isRange ? 206 : 200,
+            status: 206,
             headers
           }));
         } else if (e.data.type === 'CHUNK') {
-          if (isBuffering) {
-            bufferedChunks.push(new Uint8Array(e.data.chunk));
-            bufferedSize += e.data.chunk.byteLength;
-            if (bufferedSize >= BUFFER_THRESHOLD) {
-              isBuffering = false;
-              for (const chunk of bufferedChunks) {
-                streamController.enqueue(chunk);
-              }
-              bufferedChunks = [];
-            }
-          } else {
-            streamController.enqueue(new Uint8Array(e.data.chunk));
-          }
+          streamController.enqueue(new Uint8Array(e.data.chunk));
         } else if (e.data.type === 'DONE') {
-          if (isBuffering) {
-            // Flush remaining buffer if stream ends before threshold
-            for (const chunk of bufferedChunks) {
-              streamController.enqueue(chunk);
-            }
-            bufferedChunks = [];
-          }
           streamController.close();
         } else if (e.data.type === 'ERROR') {
           streamController.error(new Error('Stream error'));
